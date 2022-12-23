@@ -123,6 +123,7 @@ static int do_testhpke(const TEST_BASEDATA *base,
     if (!TEST_true(cmpkey(privE, base->expected_pkEm, base->expected_pkEmlen)))
         goto end;
     if (!TEST_ptr(sealctx = OSSL_HPKE_CTX_new(base->mode, base->suite,
+                                              OSSL_HPKE_ROLE_SENDER,
                                               libctx, propq)))
         goto end;
     if (!TEST_true(OSSL_HPKE_CTX_set1_ikme(sealctx, base->ikmE, base->ikmElen)))
@@ -172,6 +173,7 @@ static int do_testhpke(const TEST_BASEDATA *base,
             goto end;
     }
     if (!TEST_ptr(openctx = OSSL_HPKE_CTX_new(base->mode, base->suite,
+                                              OSSL_HPKE_ROLE_RECEIVER,
                                               libctx, propq)))
         goto end;
     if (base->mode == OSSL_HPKE_MODE_PSK
@@ -797,7 +799,9 @@ static uint16_t hpke_kdf_list[] = {
 static uint16_t hpke_aead_list[] = {
     OSSL_HPKE_AEAD_ID_AES_GCM_128,
     OSSL_HPKE_AEAD_ID_AES_GCM_256,
+#if !defined(OPENSSL_NO_CHACHA) && !defined(OPENSSL_NO_POLY1305)
     OSSL_HPKE_AEAD_ID_CHACHA_POLY1305
+#endif
 };
 
 /*
@@ -911,7 +915,6 @@ static int test_hpke_modes_suites(void)
         OSSL_HPKE_SUITE hpke_suite = OSSL_HPKE_SUITE_DEFAULT;
         size_t plainlen = OSSL_HPKE_TSTSIZE;
         unsigned char plain[OSSL_HPKE_TSTSIZE];
-        uint64_t startseq = 0;
         OSSL_HPKE_CTX *rctx = NULL;
         OSSL_HPKE_CTX *ctx = NULL;
 
@@ -993,6 +996,7 @@ static int test_hpke_modes_suites(void)
                                                     NULL, 0, testctx, NULL)))
                         overallresult = 0;
                     if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                                          OSSL_HPKE_ROLE_SENDER,
                                                           testctx, NULL)))
                         overallresult = 0;
                     if (hpke_mode == OSSL_HPKE_MODE_PSK
@@ -1006,16 +1010,6 @@ static int test_hpke_modes_suites(void)
                         if (!TEST_true(OSSL_HPKE_CTX_set1_authpriv(ctx,
                                                                    authpriv)))
                             overallresult = 0;
-                    }
-                    if (COIN_IS_HEADS) {
-                        RAND_bytes_ex(testctx,
-                                      (unsigned char *) &startseq,
-                                      sizeof(startseq),
-                                      RAND_DRBG_STRENGTH);
-                        if (!TEST_true(OSSL_HPKE_CTX_set_seq(ctx, startseq)))
-                            overallresult = 0;
-                    } else {
-                        startseq = 0;
                     }
                     if (!TEST_true(OSSL_HPKE_encap(ctx, senderpub,
                                                    &senderpublen,
@@ -1036,9 +1030,10 @@ static int test_hpke_modes_suites(void)
                         overallresult = 0;
                     OSSL_HPKE_CTX_free(ctx);
                     memset(clear, 0, clearlen);
-                    if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(hpke_mode,
-                                                           hpke_suite,
-                                                           testctx, NULL)))
+                    rctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                             OSSL_HPKE_ROLE_RECEIVER,
+                                             testctx, NULL);
+                    if (!TEST_ptr(rctx))
                         overallresult = 0;
                     if (hpke_mode == OSSL_HPKE_MODE_PSK
                         || hpke_mode == OSSL_HPKE_MODE_PSKAUTH) {
@@ -1060,10 +1055,6 @@ static int test_hpke_modes_suites(void)
                         if (!TEST_true(OSSL_HPKE_CTX_set1_authpub(rctx,
                                                                   authpubp,
                                                                   authpublen)))
-                            overallresult = 0;
-                    }
-                    if (startseq != 0) {
-                        if (!TEST_true(OSSL_HPKE_CTX_set_seq(rctx, startseq)))
                             overallresult = 0;
                     }
                     if (!TEST_true(OSSL_HPKE_decap(rctx, senderpub,
@@ -1141,6 +1132,7 @@ static int test_hpke_export(void)
                                     NULL, 0, testctx, NULL)))
         goto end;
     if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                          OSSL_HPKE_ROLE_SENDER,
                                           testctx, NULL)))
         goto end;
     /* a few error cases 1st */
@@ -1167,6 +1159,7 @@ static int test_hpke_export(void)
     if (!TEST_mem_eq(exp, sizeof(exp), exp2, sizeof(exp2)))
         goto end;
     if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                           OSSL_HPKE_ROLE_RECEIVER,
                                            testctx, NULL)))
         goto end;
     if (!TEST_true(OSSL_HPKE_decap(rctx, enc, enclen, privp, NULL, 0)))
@@ -1207,8 +1200,6 @@ static int test_hpke_suite_strs(void)
     char sstr[128];
     OSSL_HPKE_SUITE stirred;
     char giant[2048];
-    size_t suitesize;
-    size_t ptr_suitesize;
 
     for (kemind = 0; kemind != OSSL_NELEM(kem_str_list); kemind++) {
         for (kdfind = 0; kdfind != OSSL_NELEM(kdf_str_list); kdfind++) {
@@ -1244,14 +1235,6 @@ static int test_hpke_suite_strs(void)
     giant[sizeof(giant) - 1] = '\0';
     if (!TEST_false(OSSL_HPKE_str2suite(giant, &stirred)))
         overallresult = 0;
-
-    /* we'll check the size of a suite just to see what we get */
-    suitesize = sizeof(stirred);
-    ptr_suitesize = sizeof(&stirred);
-    if (verbose) {
-        TEST_note("Size of OSSL_HPKE_SUITE is %d, size of ptr is %d",
-                  (int) suitesize, (int) ptr_suitesize);
-    }
 
     return overallresult;
 }
@@ -1351,13 +1334,6 @@ static int test_hpke_oddcalls(void)
     if (!TEST_false(OSSL_HPKE_CTX_set1_psk(NULL, NULL, NULL, 0)))
         goto end;
 
-    /* make/break ctx */
-    if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
-                                          testctx, "foo")))
-        goto end;
-    OSSL_HPKE_CTX_free(ctx);
-    ctx = NULL;
-
     /* bad suite calls */
     hpke_suite.aead_id = 0xbad;
     if (!TEST_false(OSSL_HPKE_suite_check(hpke_suite)))
@@ -1419,6 +1395,7 @@ static int test_hpke_oddcalls(void)
 
     /* a psk context with no psk => encap fail */
     if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(OSSL_HPKE_MODE_PSK, hpke_suite,
+                                          OSSL_HPKE_ROLE_SENDER,
                                           testctx, NULL)))
         goto end;
     /* set bad length psk */
@@ -1438,14 +1415,17 @@ static int test_hpke_oddcalls(void)
 
     /* bad suite */
     if (!TEST_ptr_null(ctx = OSSL_HPKE_CTX_new(hpke_mode, bad_suite,
+                                               OSSL_HPKE_ROLE_SENDER,
                                                testctx, NULL)))
         goto end;
     /* bad mode */
     if (!TEST_ptr_null(ctx = OSSL_HPKE_CTX_new(bad_mode, hpke_suite,
+                                               OSSL_HPKE_ROLE_SENDER,
                                                testctx, NULL)))
         goto end;
     /* make good ctx */
     if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                          OSSL_HPKE_ROLE_SENDER,
                                           testctx, NULL)))
         goto end;
     /* too long ikm */
@@ -1488,17 +1468,7 @@ static int test_hpke_oddcalls(void)
     if (!TEST_false(OSSL_HPKE_seal(ctx, cipher, &cipherlen, NULL, 0,
                                    plain, plainlen)))
         goto end;
-    /* the sequence ought not have been incremented, so good to start over */
     plainlen = sizeof(plain);
-    /* seq wrap around test */
-    if (!TEST_true(OSSL_HPKE_CTX_set_seq(ctx, -1)))
-        goto end;
-    if (!TEST_false(OSSL_HPKE_seal(ctx, cipher, &cipherlen, NULL, 0,
-                                   plain, plainlen)))
-        goto end;
-    /* reset seq */
-    if (!TEST_true(OSSL_HPKE_CTX_set_seq(ctx, 0)))
-        goto end;
     /* working seal */
     if (!TEST_true(OSSL_HPKE_seal(ctx, cipher, &cipherlen, NULL, 0,
                                   plain, plainlen)))
@@ -1507,6 +1477,7 @@ static int test_hpke_oddcalls(void)
     /* receiver side */
     /* decap fail with psk mode but no psk set */
     if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(OSSL_HPKE_MODE_PSK, hpke_suite,
+                                           OSSL_HPKE_ROLE_RECEIVER,
                                            testctx, NULL)))
         goto end;
     if (!TEST_false(OSSL_HPKE_decap(rctx, enc, enclen, privp, NULL, 0)))
@@ -1516,6 +1487,7 @@ static int test_hpke_oddcalls(void)
 
     /* back good calls for base mode  */
     if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                           OSSL_HPKE_ROLE_RECEIVER,
                                            testctx, NULL)))
         goto end;
     /* open before decap */
@@ -1831,6 +1803,7 @@ static int test_hpke_compressed(void)
                                     NULL, 0, testctx, NULL)))
         goto end;
     if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                          OSSL_HPKE_ROLE_SENDER,
                                           testctx, NULL)))
         goto end;
     if (!TEST_true(OSSL_HPKE_CTX_set1_authpriv(ctx, authpriv)))
@@ -1843,6 +1816,7 @@ static int test_hpke_compressed(void)
 
     /* receiver side providing compressed form of auth public */
     if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                           OSSL_HPKE_ROLE_RECEIVER,
                                            testctx, NULL)))
         goto end;
     if (!TEST_true(OSSL_HPKE_CTX_set1_authpub(rctx, authpub, authpublen)))
@@ -1857,6 +1831,81 @@ static int test_hpke_compressed(void)
 end:
     EVP_PKEY_free(privp);
     EVP_PKEY_free(authpriv);
+    OSSL_HPKE_CTX_free(ctx);
+    OSSL_HPKE_CTX_free(rctx);
+    return erv;
+}
+
+/*
+ * Test that nonce reuse calls are prevented as we expect
+ */
+static int test_hpke_noncereuse(void)
+{
+    int erv = 0;
+    EVP_PKEY *privp = NULL;
+    unsigned char pub[OSSL_HPKE_TSTSIZE];
+    size_t publen = sizeof(pub);
+    int hpke_mode = OSSL_HPKE_MODE_BASE;
+    OSSL_HPKE_SUITE hpke_suite = OSSL_HPKE_SUITE_DEFAULT;
+    OSSL_HPKE_CTX *ctx = NULL;
+    OSSL_HPKE_CTX *rctx = NULL;
+    unsigned char plain[] = "quick brown fox";
+    size_t plainlen = sizeof(plain);
+    unsigned char enc[OSSL_HPKE_TSTSIZE];
+    size_t enclen = sizeof(enc);
+    unsigned char cipher[OSSL_HPKE_TSTSIZE];
+    size_t cipherlen = sizeof(cipher);
+    unsigned char clear[OSSL_HPKE_TSTSIZE];
+    size_t clearlen = sizeof(clear);
+    uint64_t seq = 0xbad1dea;
+
+    /* sender side is not allowed set seq once some crypto done */
+    if (!TEST_true(OSSL_HPKE_keygen(hpke_suite, pub, &publen, &privp,
+                                    NULL, 0, testctx, NULL)))
+        goto end;
+    if (!TEST_ptr(ctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                          OSSL_HPKE_ROLE_SENDER,
+                                          testctx, NULL)))
+        goto end;
+    /* set seq will fail before any crypto done */
+    if (!TEST_false(OSSL_HPKE_CTX_set_seq(ctx, seq)))
+        goto end;
+    if (!TEST_true(OSSL_HPKE_encap(ctx, enc, &enclen, pub, publen, NULL, 0)))
+        goto end;
+    /* set seq will also fail after some crypto done */
+    if (!TEST_false(OSSL_HPKE_CTX_set_seq(ctx, seq + 1)))
+        goto end;
+    if (!TEST_true(OSSL_HPKE_seal(ctx, cipher, &cipherlen, NULL, 0,
+                                  plain, plainlen)))
+        goto end;
+
+    /* receiver side is allowed control seq */
+    if (!TEST_ptr(rctx = OSSL_HPKE_CTX_new(hpke_mode, hpke_suite,
+                                           OSSL_HPKE_ROLE_RECEIVER,
+                                           testctx, NULL)))
+        goto end;
+    /* set seq will work before any crypto done */
+    if (!TEST_true(OSSL_HPKE_CTX_set_seq(rctx, seq)))
+        goto end;
+    if (!TEST_true(OSSL_HPKE_decap(rctx, enc, enclen, privp, NULL, 0)))
+        goto end;
+    /* set seq will work for receivers even after crypto done */
+    if (!TEST_true(OSSL_HPKE_CTX_set_seq(rctx, seq)))
+        goto end;
+    /* but that value isn't good so decap will fail */
+    if (!TEST_false(OSSL_HPKE_open(rctx, clear, &clearlen, NULL, 0,
+                                   cipher, cipherlen)))
+        goto end;
+    /* reset seq to correct value and _open() should work */
+    if (!TEST_true(OSSL_HPKE_CTX_set_seq(rctx, 0)))
+        goto end;
+    if (!TEST_true(OSSL_HPKE_open(rctx, clear, &clearlen, NULL, 0,
+                                  cipher, cipherlen)))
+        goto end;
+    erv = 1;
+
+end:
+    EVP_PKEY_free(privp);
     OSSL_HPKE_CTX_free(ctx);
     OSSL_HPKE_CTX_free(rctx);
     return erv;
@@ -1910,6 +1959,7 @@ int setup_tests(void)
     ADD_TEST(test_hpke_random_suites);
     ADD_TEST(test_hpke_oddcalls);
     ADD_TEST(test_hpke_compressed);
+    ADD_TEST(test_hpke_noncereuse);
     return 1;
 }
 
