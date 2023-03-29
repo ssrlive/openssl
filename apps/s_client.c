@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright 2005 Nokia. All rights reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -74,6 +74,9 @@ static int ocsp_resp_cb(SSL *s, void *arg);
 #endif
 static int ldap_ExtendedResponse_parse(const char *buf, long rem);
 static int is_dNS_name(const char *host);
+
+static const unsigned char cert_type_rpk[] = { TLSEXT_cert_type_rpk, TLSEXT_cert_type_x509 };
+static int enable_server_rpk = 0;
 
 static int saved_errno;
 
@@ -468,6 +471,8 @@ typedef enum OPTION_choice {
 #endif
     OPT_DANE_TLSA_RRDATA, OPT_DANE_EE_NO_NAME,
     OPT_ENABLE_PHA,
+    OPT_ENABLE_SERVER_RPK,
+    OPT_ENABLE_CLIENT_RPK,
     OPT_SCTP_LABEL_BUG,
     OPT_KTLS,
     OPT_R_ENUM, OPT_PROV_ENUM
@@ -658,6 +663,8 @@ const OPTIONS s_client_options[] = {
 #endif
     {"early_data", OPT_EARLY_DATA, '<', "File to send as early data"},
     {"enable_pha", OPT_ENABLE_PHA, '-', "Enable post-handshake-authentication"},
+    {"enable_server_rpk", OPT_ENABLE_SERVER_RPK, '-', "Enable raw public keys (RFC7250) from the server"},
+    {"enable_client_rpk", OPT_ENABLE_CLIENT_RPK, '-', "Enable raw public keys (RFC7250) from the client"},
 #ifndef OPENSSL_NO_SRTP
     {"use_srtp", OPT_USE_SRTP, 's',
      "Offer SRTP key management with a colon-separated profile list"},
@@ -896,6 +903,7 @@ int s_client_main(int argc, char **argv)
 #endif
     char *psksessf = NULL;
     int enable_pha = 0;
+    int enable_client_rpk = 0;
 #ifndef OPENSSL_NO_SCTP
     int sctp_label_bug = 0;
 #endif
@@ -1489,6 +1497,12 @@ int s_client_main(int argc, char **argv)
             enable_ktls = 1;
 #endif
             break;
+        case OPT_ENABLE_SERVER_RPK:
+            enable_server_rpk = 1;
+            break;
+        case OPT_ENABLE_CLIENT_RPK:
+            enable_client_rpk = 1;
+            break;
         }
     }
 
@@ -1963,7 +1977,7 @@ int s_client_main(int argc, char **argv)
 
     /*
      * In TLSv1.3 NewSessionTicket messages arrive after the handshake and can
-     * come at any time. Therefore we use a callback to write out the session
+     * come at any time. Therefore, we use a callback to write out the session
      * when we know about it. This approach works for < TLSv1.3 as well.
      */
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_CLIENT
@@ -1979,6 +1993,18 @@ int s_client_main(int argc, char **argv)
 
     if (enable_pha)
         SSL_set_post_handshake_auth(con, 1);
+
+    if (enable_client_rpk)
+        if (!SSL_set1_client_cert_type(con, cert_type_rpk, sizeof(cert_type_rpk))) {
+            BIO_printf(bio_err, "Error setting client certificate types\n");
+            goto end;
+        }
+    if (enable_server_rpk) {
+        if (!SSL_set1_server_cert_type(con, cert_type_rpk, sizeof(cert_type_rpk))) {
+            BIO_printf(bio_err, "Error setting server certificate types\n");
+            goto end;
+        }
+    }
 
     if (sess_in != NULL) {
         SSL_SESSION *sess;
@@ -2849,7 +2875,7 @@ int s_client_main(int argc, char **argv)
 #if defined(OPENSSL_SYS_WINDOWS) || defined(OPENSSL_SYS_MSDOS)
             /*
              * Under Windows/DOS we make the assumption that we can always
-             * write to the tty: therefore if we need to write to the tty we
+             * write to the tty: therefore, if we need to write to the tty we
              * just fall through. Otherwise we timeout the select every
              * second and see if there are any keypresses. Note: this is a
              * hack, in a proper Windows application we wouldn't do this.
@@ -3254,6 +3280,23 @@ static void print_stuff(BIO *bio, SSL *s, int full)
         } else {
             BIO_printf(bio, "no peer certificate available\n");
         }
+
+        /* Only display RPK information if configured */
+        if (SSL_get_negotiated_client_cert_type(s) == TLSEXT_cert_type_rpk)
+            BIO_printf(bio, "Client-to-server raw public key negotiated\n");
+        if (SSL_get_negotiated_server_cert_type(s) == TLSEXT_cert_type_rpk)
+            BIO_printf(bio, "Server-to-client raw public key negotiated\n");
+        if (enable_server_rpk) {
+            EVP_PKEY *peer_rpk = SSL_get0_peer_rpk(s);
+
+            if (peer_rpk != NULL) {
+                BIO_printf(bio, "Server raw public key\n");
+                EVP_PKEY_print_public(bio, peer_rpk, 2, NULL);
+            } else {
+                BIO_printf(bio, "no peer rpk available\n");
+            }
+        }
+
         print_ca_names(bio, s);
 
         ssl_print_sigalgs(bio, s);
@@ -3394,7 +3437,7 @@ static void print_stuff(BIO *bio, SSL *s, int full)
         /*
          * We also print the verify results when we dump session information,
          * but in TLSv1.3 we may not get that right away (or at all) depending
-         * on when we get a NewSessionTicket. Therefore we print it now as well.
+         * on when we get a NewSessionTicket. Therefore, we print it now as well.
          */
         verify_result = SSL_get_verify_result(s);
         BIO_printf(bio, "Verify return code: %ld (%s)\n", verify_result,

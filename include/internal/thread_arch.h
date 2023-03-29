@@ -18,6 +18,8 @@
 
 # if defined(OPENSSL_THREADS) && defined(OPENSSL_SYS_UNIX)
 #  define OPENSSL_THREADS_POSIX
+# elif defined(OPENSSL_THREADS) && defined(OPENSSL_SYS_VMS)
+#  define OPENSSL_THREADS_POSIX
 # elif defined(OPENSSL_THREADS) && defined(OPENSSL_SYS_WINDOWS) && \
     defined(_WIN32_WINNT)
 #  if _WIN32_WINNT >= 0x0600
@@ -114,7 +116,5 @@ int ossl_crypto_thread_native_perform_join(CRYPTO_THREAD *thread,
 int ossl_crypto_thread_native_exit(void);
 int ossl_crypto_thread_native_is_self(CRYPTO_THREAD *thread);
 int ossl_crypto_thread_native_clean(CRYPTO_THREAD *thread);
-
-void ossl_crypto_mem_barrier(void);
 
 #endif /* OSSL_INTERNAL_THREAD_ARCH_H */
